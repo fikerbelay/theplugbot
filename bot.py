@@ -3,11 +3,10 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# --- CONFIGURATION ---
-# YOU MUST CHANGE THESE TWO THINGS:
-BOT_TOKEN = "YOUR_NEW_TOKEN_HERE"  # Get from @BotFather after revoking
+
+BOT_TOKEN = "7869986791:AAERF18jdtPm_kmdaGqKKA3Ce6W18CGgAy8"  
 CHANNEL_USERNAME = "@habitsofmusic"
-CHANNEL_ID = -1001234567890  # We'll find this number later
+CHANNEL_ID = -1001886812003  
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
