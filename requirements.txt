@@ -1,4 +1,5 @@
 python-telegram-bot==20.6
-spotdl
+spotdl==4.2.5
 yt-dlp
 mutagen
+ffmpeg-python
