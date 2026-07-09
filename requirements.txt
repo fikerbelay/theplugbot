@@ -1,4 +1,4 @@
 python-telegram-bot==20.6
+spotdl
 yt-dlp
-spotdl  # if using spotdl
-mutagen  # for metadata editing
+mutagen
