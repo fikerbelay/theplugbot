@@ -46,51 +46,57 @@ def require_subscription(func):
 
 # --- DOWNLOAD FUNCTION ---
 async def download_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
-    """Download and send audio to user."""
-    # Tell user we're searching
-    await update.message.reply_text("🔍 Searching for your track... This may take a moment.")
+    """Download and send audio using yt-dlp."""
+    status_msg = await update.message.reply_text("🔍 Searching for your track... This may take a moment.")
     
-    # Create a temporary download folder
+    # Check if it's a YouTube link or search query
+    is_youtube = 'youtube.com' in query or 'youtu.be' in query or 'spotify.com' in query
+    
     download_dir = f"./downloads/{update.effective_user.id}"
     os.makedirs(download_dir, exist_ok=True)
     
     try:
-        # Use spotdl to download the track
-        # If query is a Spotify link OR a search term
-        cmd = [
-            "spotdl", query, 
-            "--output", f"{download_dir}/{{artist}} - {{title}}",
-            "--ffmpeg", "/usr/bin/ffmpeg"  # Path to ffmpeg on your system
-        ]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        
-        if result.returncode == 0:
-            # Find the downloaded file
-            files = os.listdir(download_dir)
-            if files:
-                # Send the MP3 file
-                audio_file = f"{download_dir}/{files[0]}"
-                with open(audio_file, 'rb') as audio:
+        if is_youtube:
+            # Use yt-dlp for YouTube/Spotify
+            import yt_dlp
+            
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'outtmpl': f'{download_dir}/%(title)s.%(ext)s',
+                'quiet': True,
+                'no_warnings': True,
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(query, download=True)
+                filename = ydl.prepare_filename(info)
+                # Change extension from whatever to mp3
+                mp3_file = filename.rsplit('.', 1)[0] + '.mp3'
+                
+                with open(mp3_file, 'rb') as audio:
                     await update.message.reply_audio(
                         audio=audio,
-                        filename=files[0],
-                        caption="🎵 Here's your track!"
+                        filename=os.path.basename(mp3_file),
+                        caption=f"🎵 {info.get('title', 'Track')}"
                     )
-            else:
-                await update.message.reply_text("❌ No file was downloaded. Please try again.")
+                
+                os.remove(mp3_file)
         else:
-            error_msg = result.stderr if result.stderr else "Unknown error"
-            await update.message.reply_text(f"❌ Could not download that track. Error: {error_msg[:200]}")
-            
-    except subprocess.TimeoutExpired:
-        await update.message.reply_text("⏰ Download took too long. Please try again with a shorter query.")
+            # Use spotdl for search queries
+            import spotdl
+            # This needs the full implementation
+            await status_msg.edit_text("❌ Search feature coming soon! Please send a YouTube or Spotify link.")
+        
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str(e)[:200]}")
+        await status_msg.edit_text(f"❌ Error: {str(e)[:200]}")
     finally:
-        # Clean up temp files
         shutil.rmtree(download_dir, ignore_errors=True)
-
+        await status_msg.delete()
 # --- COMMAND HANDLERS ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
