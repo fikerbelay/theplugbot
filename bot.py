@@ -1,470 +1,446 @@
-import logging
-import subprocess
+'''
+THE PLUG - YouTube/Spotify Music Downloader Bot
+✅ Uses yt-dlp subprocess
+✅ Converts and saves MP3 when requested
+✅ Auto-deletes after sending
+✅ Channel subscription required
+'''
+
 import os
+import asyncio
+import subprocess
+import glob
 import shutil
-import re
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+from dotenv import load_dotenv
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+
+load_dotenv()
 
 # --- CONFIGURATION ---
-BOT_TOKEN = "7869986791:AAERF18jdtPm_kmdaGqKKA3Ce6W18CGgAy8"
-CHANNEL_ID = -1001886812003
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7869986791:AAERF18jdtPm_kmdaGqKKA3Ce6W18CGgAy8")
+CHANNEL_USERNAME = "habitsofmusic"  # Your channel username (without @)
+CHANNEL_LINK = "https://t.me/habitsofmusic"
+SUPPORT_LINK = "https://t.me/your_support_bot"  # Change this
+SUPPORT_AD_LINK = "https://your-ad-link.com"  # Change this
 
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+# Store user format preferences
+user_format_preferences = {}
 
-# --- SUBSCRIPTION CHECK FUNCTION ---
-async def is_user_subscribed(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
-    """Check if a user is a member of the channel."""
+# --- SUBSCRIPTION CHECK ---
+async def check_user_joined_channel(app, user_id):
+    """Check if user is a member of the channel."""
     try:
-        member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        return member.status in ["member", "administrator", "creator"]
-    except:
+        member = await app.bot.get_chat_member(chat_id=f"@{CHANNEL_USERNAME}", user_id=user_id)
+        print(f"[DEBUG] Member status: {member.status}")
+        return member.status in ("member", "administrator", "creator")
+    except Exception as e:
+        print(f"[Channel Join Check Error] {e}")
         return False
 
-# --- DECORATOR TO CHECK SUBSCRIPTION ON EVERY COMMAND ---
-def require_subscription(func):
-    """Decorator to check if user is subscribed before running command."""
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        user_id = update.effective_user.id
-        
-        # Check if user is subscribed
-        if not await is_user_subscribed(context, user_id):
-            keyboard = [[InlineKeyboardButton("📢 JOIN CHANNEL", url="https://t.me/habitsofmusic")],
-                        [InlineKeyboardButton("✅ I've Joined! Check Again", callback_data="check_sub")]]
-            await update.message.reply_text(
-                "🚫 **Access Denied!**\n\n"
-                "You must be a member of @habitsofmusic to use this bot.\n\n"
-                "👉 Click below to join, then verify!",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="Markdown"
-            )
-            return
-        
-        # User is subscribed, run the actual command
-        return await func(update, context, *args, **kwargs)
-    return wrapper
+# --- COMMAND HANDLERS ---
 
-# --- DOWNLOAD FUNCTION ---
-async def download_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
-    """Download and send audio using yt-dlp with cookies."""
-    msg = await update.message.reply_text("🔍 Processing your request... This may take a moment.")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start command."""
+    user_id = update.effective_user.id
+    joined = await check_user_joined_channel(context.application, user_id)
+
+    if not joined:
+        await update.message.reply_text(
+            "🚫 **Access Denied!**\n\n"
+            "You must join @habitsofmusic to use this bot.\n\n"
+            "Click below to join, then try again!",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📢 Join Channel", url=CHANNEL_LINK)],
+                [InlineKeyboardButton("✅ I've Joined! Check Again", callback_data="check_join")]
+            ])
+        )
+        return
+
+    await update.message.reply_text(
+        "🎵 **Welcome to THE PLUG!**\n\n"
+        "I can download music from YouTube and Spotify!\n\n"
+        "**How to use:**\n"
+        "1️⃣ Choose a format below\n"
+        "2️⃣ Send me a YouTube or Spotify link\n"
+        "3️⃣ I'll download and send it to you!\n\n"
+        "**Format Options:**",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🎵 MP3 (Audio)", callback_data="mp3"),
+                InlineKeyboardButton("🎬 720p (Video)", callback_data="720p")
+            ],
+            [
+                InlineKeyboardButton("📹 480p (Video)", callback_data="480p"),
+                InlineKeyboardButton("🎬 1080p (Video)", callback_data="1080p")
+            ],
+            [
+                InlineKeyboardButton("❓ Help", callback_data="help"),
+                InlineKeyboardButton("🔒 Privacy", callback_data="privacy")
+            ],
+            [
+                InlineKeyboardButton("❤️ Support Us", url=SUPPORT_AD_LINK)
+            ]
+        ])
+    )
+
+async def format_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle format selection via callback."""
+    query = update.callback_query
+    user_id = query.from_user.id
+    format_choice = query.data
+    await query.answer()
     
-    # Create download folder
-    download_dir = f"./downloads/{update.effective_user.id}"
-    os.makedirs(download_dir, exist_ok=True)
+    # Handle help and privacy callbacks
+    if format_choice == "help":
+        await query.edit_message_text(
+            "📖 **Help Menu**\n\n"
+            "1. Choose a format (MP3, 480p, 720p, or 1080p)\n"
+            "2. Send a YouTube or Spotify link\n"
+            "3. I'll download and send it!\n\n"
+            "**Commands:**\n"
+            "/start - Show this menu\n"
+            "/privacy - Privacy policy\n"
+            "/cancel - Cancel download\n\n"
+            "**Supported:**\n"
+            "✅ YouTube videos\n"
+            "✅ Spotify tracks\n"
+            "✅ YouTube Music\n\n"
+            "⚠️ Files auto-delete after 30 seconds!",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]
+            ])
+        )
+        return
     
-    # Check if cookies file exists
-    cookie_file = "cookies.txt"
-    use_cookies = os.path.exists(cookie_file)
+    if format_choice == "privacy":
+        await query.edit_message_text(
+            "🔒 **Privacy Policy**\n\n"
+            "• We do NOT store your personal data\n"
+            "• Chat IDs are cached temporarily\n"
+            "• No files are saved permanently\n"
+            "• Your data is never shared\n\n"
+            "Files are deleted after 30 seconds.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]
+            ])
+        )
+        return
     
-    if use_cookies:
-        await msg.edit_text("🔑 Using cookies for authentication...")
-    
-    try:
-        # Check if it's a Spotify link
-        is_spotify = 'spotify.com' in query
-        
-        if is_spotify:
-            # Use spotdl to get track name (without downloading)
-            search_cmd = ["spotdl", query, "--print", "title,artist"]
-            search_result = subprocess.run(search_cmd, capture_output=True, text=True, timeout=30)
-            
-            if search_result.returncode == 0 and search_result.stdout:
-                # Use the search result to find on YouTube
-                search_query = search_result.stdout.strip().replace('\n', ' ').replace(',', ' ')
-                await msg.edit_text(f"🔍 Searching YouTube for: {search_query[:50]}...")
-                
-                # Use yt-dlp with the search query
-                cmd = [
-                    "yt-dlp",
-                    f"ytsearch1:{search_query}",
-                    "-x",
-                    "--audio-format", "mp3",
-                    "--audio-quality", "192K",
-                    "-o", f"{download_dir}/%(title)s.%(ext)s",
-                    "--extractor-args", "youtube:player_client=android_embedded",
-                    "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                    "--no-warnings",
-                    "--no-check-certificate"
+    if format_choice == "back_to_menu":
+        # Go back to main menu
+        await query.edit_message_text(
+            "🎵 **Welcome to THE PLUG!**\n\n"
+            "Choose a format to download:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🎵 MP3 (Audio)", callback_data="mp3"),
+                    InlineKeyboardButton("🎬 720p (Video)", callback_data="720p")
+                ],
+                [
+                    InlineKeyboardButton("📹 480p (Video)", callback_data="480p"),
+                    InlineKeyboardButton("🎬 1080p (Video)", callback_data="1080p")
                 ]
-                
-                # Add cookies if available
-                if use_cookies:
-                    cmd.insert(2, cookie_file)
-                    cmd.insert(2, "--cookies")
-                
-            else:
-                await msg.edit_text("❌ Could not find this track. Please try a YouTube link instead.")
-                return
-        else:
-            # Direct YouTube link or search
+            ])
+        )
+        return
+    
+    # Store format preference
+    user_format_preferences[user_id] = format_choice
+    await query.edit_message_text(
+        f"✅ **Format selected: {format_choice}**\n\n"
+        "Now send me a YouTube or Spotify link!\n\n"
+        "Example: `https://www.youtube.com/watch?v=dQw4w9WgXcQ`\n"
+        "Or: `https://open.spotify.com/track/...`\n\n"
+        "⚠️ Files auto-delete after 30 seconds!",
+        parse_mode="Markdown"
+    )
+
+async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle 'Check Again' callback."""
+    query = update.callback_query
+    user_id = query.from_user.id
+    await query.answer()
+    
+    joined = await check_user_joined_channel(context.application, user_id)
+    
+    if joined:
+        await query.edit_message_text(
+            "✅ **Subscription Verified!**\n\n"
+            "You now have full access to THE PLUG!\n"
+            "Send /start to see the menu.",
+            parse_mode="Markdown"
+        )
+    else:
+        await query.edit_message_text(
+            "❌ **Still Not Joined!**\n\n"
+            "Please join @habitsofmusic first:\n"
+            f"{CHANNEL_LINK}\n\n"
+            "Then click 'I've Joined! Check Again'.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📢 Join Channel", url=CHANNEL_LINK)],
+                [InlineKeyboardButton("✅ I've Joined! Check Again", callback_data="check_join")]
+            ])
+        )
+
+async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle incoming YouTube/Spotify links."""
+    url = update.message.text
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+
+    # Check if user joined channel
+    joined = await check_user_joined_channel(context.application, user_id)
+    if not joined:
+        await update.message.reply_text(
+            "🚫 **Access Denied!**\n\n"
+            "You must join @habitsofmusic first!\n"
+            f"{CHANNEL_LINK}",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📢 Join Channel", url=CHANNEL_LINK)],
+                [InlineKeyboardButton("✅ I've Joined! Check Again", callback_data="check_join")]
+            ])
+        )
+        return
+
+    # Check if it's a valid link
+    if not any(domain in url for domain in ['youtube.com', 'youtu.be', 'spotify.com']):
+        await update.message.reply_text(
+            "❌ **Invalid Link!**\n\n"
+            "Please send a valid YouTube or Spotify link.\n\n"
+            "Examples:\n"
+            "`https://www.youtube.com/watch?v=...`\n"
+            "`https://open.spotify.com/track/...`",
+            parse_mode="Markdown"
+        )
+        return
+
+    # Get format preference (default to MP3)
+    format_choice = user_format_preferences.get(user_id, "mp3")
+    
+    await update.message.reply_text(
+        f"✅ **Received!**\n\n"
+        f"Format: `{format_choice}`\n"
+        "⏳ Downloading now, please wait...",
+        parse_mode="Markdown"
+    )
+    
+    # Start download in background
+    asyncio.create_task(handle_download_and_send(chat_id, url, context, format_choice))
+
+async def handle_download_and_send(chat_id, url, context, format_choice):
+    """Download and send the file to user."""
+    try:
+        # Create temp directory
+        download_dir = f"./downloads/{chat_id}"
+        os.makedirs(download_dir, exist_ok=True)
+        
+        # Change to download directory
+        original_dir = os.getcwd()
+        os.chdir(download_dir)
+        
+        # Build yt-dlp command
+        if format_choice == "mp3":
             cmd = [
                 "yt-dlp",
-                query,
-                "-x",
+                "--js-runtimes", "node",
+                "-f", "bestaudio/best",
+                "--extract-audio",
                 "--audio-format", "mp3",
                 "--audio-quality", "192K",
-                "-o", f"{download_dir}/%(title)s.%(ext)s",
-                "--extractor-args", "youtube:player_client=android_embedded",
-                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "--no-warnings",
-                "--no-check-certificate"
+                "-o", "%(title)s.%(ext)s",
+                url
             ]
-            
-            # Add cookies if available
-            if use_cookies:
-                cmd.insert(2, cookie_file)
-                cmd.insert(2, "--cookies")
-        
-        # Run the download
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-        
-        if result.returncode == 0:
-            # Find downloaded file
-            files = os.listdir(download_dir)
-            mp3_files = [f for f in files if f.endswith('.mp3')]
-            
-            if mp3_files:
-                audio_path = os.path.join(download_dir, mp3_files[0])
-                
-                # Check file size (Telegram limit is 50MB)
-                file_size = os.path.getsize(audio_path) / (1024 * 1024)
-                if file_size > 48:
-                    await msg.edit_text(f"⚠️ File is {file_size:.1f}MB - too large for Telegram (max 50MB). Trying a lower quality...")
-                    # Try again with lower quality
-                    os.remove(audio_path)
-                    
-                    # Retry with lower quality
-                    cmd_retry = cmd.copy()
-                    # Replace quality in the command
-                    for i, arg in enumerate(cmd_retry):
-                        if arg == "--audio-quality":
-                            cmd_retry[i+1] = "128K"
-                    
-                    result = subprocess.run(cmd_retry, capture_output=True, text=True, timeout=180)
-                    
-                    if result.returncode == 0:
-                        files = os.listdir(download_dir)
-                        mp3_files = [f for f in files if f.endswith('.mp3')]
-                        if mp3_files:
-                            audio_path = os.path.join(download_dir, mp3_files[0])
-                
-                # Send the audio
-                with open(audio_path, 'rb') as audio:
-                    await update.message.reply_audio(
-                        audio=audio,
-                        filename=mp3_files[0],
-                        caption=f"🎵 {mp3_files[0][:-4][:50]}"
-                    )
-                
-                os.remove(audio_path)
-                await msg.delete()
-            else:
-                await msg.edit_text("❌ No MP3 file created.")
         else:
-            error = result.stderr if result.stderr else result.stdout
+            # Video format
+            height_map = {"480p": 480, "720p": 720, "1080p": 1080}
+            height = height_map.get(format_choice, 720)
             
-            # Handle specific errors
-            if "Sign in to confirm" in error or "confirm you're not a bot" in error:
-                await msg.edit_text(
-                    "❌ YouTube is blocking downloads.\n\n"
-                    "**Try this instead:**\n"
-                    "1. Refresh your cookies and re-upload `cookies.txt`\n"
-                    "2. Try a direct YouTube link (not Spotify)\n"
-                    "3. Try a different song\n\n"
-                    "YouTube has strict anti-bot measures. We're working on a fix!"
-                )
-            elif "Unsupported URL" in error:
-                await msg.edit_text("❌ Unsupported URL. Please send a YouTube or Spotify link.")
-            else:
-                await msg.edit_text(f"❌ Error: {error[:200]}")
-            
-    except subprocess.TimeoutExpired:
-        await msg.edit_text("⏰ Download took too long. Please try a shorter video or different link.")
-    except Exception as e:
-        await msg.edit_text(f"❌ Error: {str(e)[:200]}")
-    finally:
-        # Clean up
-        shutil.rmtree(download_dir, ignore_errors=True)
-
-
-# --- COMMAND HANDLERS ---
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    if not await is_user_subscribed(context, user_id):
-        keyboard = [[InlineKeyboardButton("📢 JOIN CHANNEL", url="https://t.me/habitsofmusic")],
-                    [InlineKeyboardButton("✅ I've Joined! Check Again", callback_data="check_sub")]]
-        await update.message.reply_text(
-            "🚫 **Access Denied!**\n\n"
-            "You must join @habitsofmusic to use this bot.\n\n"
-            "Click below to join, then verify!",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
-        )
-        return
-    
-    await update.message.reply_text(
-        "✅ **Welcome to THE PLUG!**\n\n"
-        "🎵 I can download music from Spotify and YouTube!\n\n"
-        "**How to use:**\n"
-        "• Send me a Spotify or YouTube **LINK**\n"
-        "• Or use /track to search for a song\n"
-        "• Use /album to search for an album\n\n"
-        "**Commands:**\n"
-        "/start - Start the bot\n"
-        "/track - Search for a track\n"
-        "/album - Search for an album\n"
-        "/help - Show all commands\n"
-        "/privacy - Privacy policy\n"
-        "/cancel - Cancel current operation\n\n"
-        "⚠️ *You must watch an ad before downloading!*"
-    )
-
-async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback for the 'Check Again' button."""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    
-    if await is_user_subscribed(context, user_id):
-        await query.edit_message_text(
-            "✅ **Subscription Verified!**\n\n"
-            "You now have full access to the bot!\n"
-            "Send /start to see all commands."
-        )
-    else:
-        await query.answer("❌ You haven't joined yet! Please join and try again.", show_alert=True)
-
-@require_subscription
-async def track(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🎵 **Track Search**\n\n"
-        "Please send me the song name or Spotify/YouTube link.\n\n"
-        "Example: `Shape of You` or `https://open.spotify.com/track/...`"
-    )
-    # Store that user is in track mode
-    context.user_data['mode'] = 'track'
-
-@require_subscription
-async def album(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "💿 **Album Search**\n\n"
-        "Please send me the album name or Spotify/YouTube link.\n\n"
-        "Example: `Thriller` or `https://open.spotify.com/album/...`"
-    )
-    context.user_data['mode'] = 'album'
-
-@require_subscription
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📖 **Help Menu**\n\n"
-        "/start - Start the bot\n"
-        "/track - Search for a track\n"
-        "/album - Search for an album\n"
-        "/privacy - Show privacy policy\n"
-        "/cancel - Cancel current operation\n\n"
-        "**Quick Tip:**\n"
-        "Just paste a Spotify or YouTube link and I'll download it!\n\n"
-        "⚠️ **Important:**\n"
-        "• You must be a member of @habitsofmusic\n"
-        "• You must watch an ad before downloading"
-    )
-
-@require_subscription
-async def privacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🔒 **Privacy Policy**\n\n"
-        "• We do not store your personal data\n"
-        "• Chat IDs are cached temporarily for functionality\n"
-        "• No music files are saved permanently on our servers\n"
-        "• Your data is never shared with third parties"
-    )
-
-@require_subscription
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text("⏹️ **Cancelled**\n\nAll ongoing operations have been stopped.")
-
-# --- MESSAGE HANDLER FOR LINKS AND SEARCH QUERIES ---
-@require_subscription
-async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle user messages (links or search queries)."""
-    text = update.message.text
-    user_id = update.effective_user.id
-    
-    # Check if it's a Spotify or YouTube link
-    spotify_pattern = r'(https?://)?(www\.)?(open\.spotify\.com|spotify\.com)/'
-    youtube_pattern = r'(https?://)?(www\.)?(youtube\.com|youtu\.be)/'
-    
-    if re.search(spotify_pattern, text) or re.search(youtube_pattern, text):
-        # It's a link - download directly
-        await download_and_send(update, context, text)
-    else:
-        # It's a search query - use spotdl to search
-        mode = context.user_data.get('mode', 'track')
-        await download_and_send(update, context, text)
-
-# --- MAIN FUNCTION ---
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-    
-    # Add command handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("track", track))
-    app.add_handler(CommandHandler("album", album))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("privacy", privacy))
-    app.add_handler(CommandHandler("cancel", cancel))
-    
-    # Add callback handler for the "Check Again" button
-    app.add_handler(CallbackQueryHandler(check_subscription, pattern="check_sub"))
-    
-    # Add message handler for links and text
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
-    
-    print("🤖 THE PLUG is running...")
-    print(f"📢 Checking subscription for channel ID: {CHANNEL_ID}")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == "__main__":
-    main()
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
-
-# --- SUBSCRIPTION CHECK FUNCTION ---
-async def is_user_subscribed(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
-    """Check if a user is a member of the channel."""
-    try:
-        member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        return member.status in ["member", "administrator", "creator"]
-    except:
-        return False
-
-# --- DECORATOR TO CHECK SUBSCRIPTION ON EVERY COMMAND ---
-def require_subscription(func):
-    """Decorator to check if user is subscribed before running command."""
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        user_id = update.effective_user.id
+            cmd = [
+                "yt-dlp",
+                "--js-runtimes", "node",
+                "-f", f"bestvideo[height<={height}]+bestaudio/best",
+                "--merge-output-format", "mp4",
+                "-o", "%(title)s.%(ext)s",
+                url
+            ]
         
-        # Check if user is subscribed
-        if not await is_user_subscribed(context, user_id):
-            keyboard = [[InlineKeyboardButton("📢 JOIN CHANNEL", url="https://t.me/habitsofmusic")],
-                        [InlineKeyboardButton("✅ I've Joined! Check Again", callback_data="check_sub")]]
-            await update.message.reply_text(
-                "🚫 **Access Denied!**\n\n"
-                "You must be a member of @habitsofmusic to use this bot.\n\n"
-                "👉 Click below to join, then verify!",
-                reply_markup=InlineKeyboardMarkup(keyboard),
+        # Run download
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+
+        # Check for errors
+        if process.returncode != 0:
+            error_output = stderr.decode().strip()
+            # Check for known errors
+            if "Sign in to confirm" in error_output:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="❌ **YouTube Blocked Download!**\n\n"
+                         "YouTube is blocking this video.\n"
+                         "Try a different video or use a Spotify link.\n\n"
+                         f"Error: {error_output[:150]}...",
+                    parse_mode="Markdown"
+                )
+            elif "Unsupported URL" in error_output:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="❌ **Unsupported URL!**\n\n"
+                         "Please send a valid YouTube or Spotify link.",
+                    parse_mode="Markdown"
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"❌ **Download Failed!**\n\nError: {error_output[:200]}",
+                    parse_mode="Markdown"
+                )
+            os.chdir(original_dir)
+            shutil.rmtree(download_dir, ignore_errors=True)
+            return
+
+        # Find downloaded file
+        files = glob.glob("*.mp3") if format_choice == "mp3" else glob.glob("*.mp4")
+        if not files:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="❌ **Download Failed!**\n\nFile not found after download.",
                 parse_mode="Markdown"
             )
+            os.chdir(original_dir)
+            shutil.rmtree(download_dir, ignore_errors=True)
             return
+
+        file_path = files[0]
+        file_size = os.path.getsize(file_path) / (1024 * 1024)  # MB
         
-        # User is subscribed, run the actual command
-        return await func(update, context, *args, **kwargs)
-    return wrapper
+        # Check file size (Telegram limit is 50MB)
+        if file_size > 48:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ **File is {file_size:.1f}MB**\n\n"
+                     "This is close to Telegram's 50MB limit.\n"
+                     "Trying to send anyway...",
+                parse_mode="Markdown"
+            )
 
-# --- COMMAND HANDLERS ---
+        # Send the file
+        with open(file_path, 'rb') as f:
+            if format_choice == "mp3":
+                await context.bot.send_audio(
+                    chat_id=chat_id,
+                    audio=f,
+                    read_timeout=120,
+                    write_timeout=120,
+                    filename=os.path.basename(file_path),
+                    title=os.path.basename(file_path)[:-4],
+                    performer="THE PLUG"
+                )
+            else:
+                await context.bot.send_video(
+                    chat_id=chat_id,
+                    video=f,
+                    read_timeout=120,
+                    write_timeout=120,
+                    filename=os.path.basename(file_path)
+                )
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    if not await is_user_subscribed(context, user_id):
-        keyboard = [[InlineKeyboardButton("📢 JOIN CHANNEL", url="https://t.me/habitsofmusic")],
-                    [InlineKeyboardButton("✅ I've Joined! Check Again", callback_data="check_sub")]]
-        await update.message.reply_text(
-            "🚫 **Access Denied!**\n\n"
-            "You must join @habitsofmusic to use this bot.\n\n"
-            "Click below to join, then verify!",
-            reply_markup=InlineKeyboardMarkup(keyboard),
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="✅ **Sent Successfully!**\n\n"
+                 "This file will auto-delete in 30 seconds.",
             parse_mode="Markdown"
         )
-        return
-    
+
+        # Wait and cleanup
+        await asyncio.sleep(30)
+        os.chdir(original_dir)
+        shutil.rmtree(download_dir, ignore_errors=True)
+
+    except Exception as e:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"❌ **Download Error!**\n\n{str(e)[:200]}",
+            parse_mode="Markdown"
+        )
+        # Cleanup on error
+        os.chdir(original_dir)
+        shutil.rmtree(download_dir, ignore_errors=True)
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /cancel command."""
+    user_id = update.effective_user.id
+    if user_id in user_format_preferences:
+        del user_format_preferences[user_id]
     await update.message.reply_text(
-        "✅ **Welcome to THE PLUG!**\n\n"
-        "🎵 I can download music from Spotify and YouTube!\n\n"
-        "**Commands:**\n"
-        "/track - Search for a track\n"
-        "/album - Search for an album\n"
-        "/help - Show all commands\n"
-        "/privacy - Privacy policy\n"
-        "/cancel - Cancel current operation\n\n"
-        "⚠️ *Note:* You must watch an ad before downloading!"
+        "⏹️ **Cancelled!**\n\n"
+        "Any ongoing operations have been stopped.",
+        parse_mode="Markdown"
     )
 
-async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback for the 'Check Again' button."""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    
-    if await is_user_subscribed(context, user_id):
-        await query.edit_message_text(
-            "✅ **Subscription Verified!**\n\n"
-            "You now have full access to the bot!\n"
-            "Send /start to see all commands."
-        )
-    else:
-        await query.answer("❌ You haven't joined yet! Please join and try again.", show_alert=True)
-
-@require_subscription
-async def track(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🎵 **Track Search**\n\nPlease send me the song name you want to download.\n\n*Note: You must watch an ad before downloading!*")
-
-@require_subscription
-async def album(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("💿 **Album Search**\n\nPlease send me the album name you want to download.\n\n*Note: You must watch an ad before downloading!*")
-
-@require_subscription
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /help command."""
     await update.message.reply_text(
         "📖 **Help Menu**\n\n"
-        "/start - Start the bot\n"
-        "/track - Search for a track\n"
-        "/album - Search for an album\n"
-        "/privacy - Show privacy policy\n"
-        "/cancel - Cancel current operation\n\n"
-        "⚠️ **Important:**\n"
-        "• You must be a member of @habitsofmusic\n"
-        "• You must watch an ad before downloading"
+        "1. Send /start to see the menu\n"
+        "2. Choose your format (MP3/Video)\n"
+        "3. Send a YouTube or Spotify link\n"
+        "4. I'll download and send it!\n\n"
+        "**Supported:**\n"
+        "✅ YouTube videos\n"
+        "✅ Spotify tracks\n"
+        "✅ YouTube Music\n\n"
+        "**Commands:**\n"
+        "/start - Show menu\n"
+        "/privacy - Privacy policy\n"
+        "/cancel - Cancel download\n\n"
+        "⚠️ Files auto-delete after 30 seconds!",
+        parse_mode="Markdown"
     )
 
-@require_subscription
-async def privacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def privacy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /privacy command."""
     await update.message.reply_text(
         "🔒 **Privacy Policy**\n\n"
-        "• We do not store your personal data\n"
-        "• Chat IDs are cached temporarily for functionality\n"
-        "• No music files are saved permanently on our servers\n"
-        "• Your data is never shared with third parties"
+        "• We do NOT store your personal data\n"
+        "• Chat IDs are cached temporarily\n"
+        "• No files are saved permanently\n"
+        "• Your data is never shared\n\n"
+        "Files are deleted after 30 seconds.",
+        parse_mode="Markdown"
     )
 
-@require_subscription
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text("⏹️ **Cancelled**\n\nAll ongoing operations have been stopped.")
-
-# --- MAIN FUNCTION ---
+# --- MAIN ---
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
     
-    # Add command handlers
+    # Command handlers
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("track", track))
-    app.add_handler(CommandHandler("album", album))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("privacy", privacy))
+    app.add_handler(CommandHandler("privacy", privacy_command))
     app.add_handler(CommandHandler("cancel", cancel))
     
-    # Add callback handler for the "Check Again" button
-    app.add_handler(CallbackQueryHandler(check_subscription, pattern="check_sub"))
+    # Callback handlers
+    app.add_handler(CallbackQueryHandler(format_selection, pattern="^(mp3|480p|720p|1080p|help|privacy|back_to_menu)$"))
+    app.add_handler(CallbackQueryHandler(check_join_callback, pattern="^check_join$"))
+    
+    # Message handler for links
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, download_video))
     
     print("🤖 THE PLUG is running...")
-    print(f"📢 Checking subscription for channel ID: {CHANNEL_ID}")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    print(f"📢 Channel: @{CHANNEL_USERNAME}")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
