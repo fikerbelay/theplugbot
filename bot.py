@@ -70,7 +70,7 @@ def main():
     app.add_handler(CallbackQueryHandler(check_subscription, pattern="check_sub"))
     
     print("🤖 THE PLUG is running...")
-    app.run_polling()
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
