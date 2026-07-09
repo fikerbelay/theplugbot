@@ -1,20 +1,14 @@
-FROM python:3.11-slim
+FROM python:3.10-slim
 
-WORKDIR /app
-
-# Install FFmpeg and other dependencies
+# Install system dependencies including nodejs (required for yt-dlp JS runtimes)
 RUN apt-get update && apt-get install -y \
     ffmpeg \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy and install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy all files from the repository
+WORKDIR /app
 COPY . .
-
-# Create downloads directory
-RUN mkdir -p downloads
+RUN pip install -r requirements.txt
 
 CMD ["python", "bot.py"]
