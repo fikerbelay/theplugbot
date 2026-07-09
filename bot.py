@@ -59,7 +59,7 @@ async def download_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         # If query is a Spotify link OR a search term
         cmd = [
             "spotdl", query, 
-            "--output", f"{download_dir}/{{artist}} - {{title}}.{output-ext}",
+            "--output", f"{download_dir}/{{artist}} - {{title}}",
             "--ffmpeg", "/usr/bin/ffmpeg"  # Path to ffmpeg on your system
         ]
         
