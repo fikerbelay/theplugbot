@@ -246,33 +246,138 @@ async def handle_download_and_send(chat_id, url, context, format_choice):
         original_dir = os.getcwd()
         os.chdir(download_dir)
         
-        # Build yt-dlp command
-        if format_choice == "mp3":
-            cmd = [
-                "yt-dlp",
-                "--js-runtimes", "node",
-                "-f", "bestaudio/best",
-                "--extract-audio",
-                "--audio-format", "mp3",
-                "--audio-quality", "192K",
-                "-o", "%(title)s.%(ext)s",
-                url
-            ]
-        else:
-            # Video format
-            height_map = {"480p": 480, "720p": 720, "1080p": 1080}
-            height = height_map.get(format_choice, 720)
-            
-            cmd = [
-                "yt-dlp",
-                "--js-runtimes", "node",
-                "-f", f"bestvideo[height<={height}]+bestaudio/best",
-                "--merge-output-format", "mp4",
-                "-o", "%(title)s.%(ext)s",
-                url
-            ]
+        # Check if it's a Spotify link
+        is_spotify = 'spotify.com' in url
         
-        # Run download
+        if is_spotify:
+            # Use spotdl to get track metadata (not download)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="🔍 **Spotify Link Detected!**\n\n"
+                     "Searching for this track on YouTube...",
+                parse_mode="Markdown"
+            )
+            
+            # Get track info using spotdl
+            spotdl_cmd = [
+                "spotdl",
+                url,
+                "--print", "title,artist"
+            ]
+            
+            process = await asyncio.create_subprocess_exec(
+                *spotdl_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+            
+            if process.returncode == 0 and stdout:
+                # Parse the output to get search query
+                track_info = stdout.decode().strip().split(',')
+                if len(track_info) >= 2:
+                    artist = track_info[0].strip()
+                    title = track_info[1].strip()
+                    search_query = f"{artist} {title} audio"
+                    
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"🎵 **Found:** {artist} - {title}\n\n"
+                             f"Downloading from YouTube...",
+                        parse_mode="Markdown"
+                    )
+                    
+                    # Now search and download from YouTube
+                    if format_choice == "mp3":
+                        cmd = [
+                            "yt-dlp",
+                            "--js-runtimes", "node",
+                            f"ytsearch1:{search_query}",
+                            "-f", "bestaudio/best",
+                            "--extract-audio",
+                            "--audio-format", "mp3",
+                            "--audio-quality", "192K",
+                            "-o", "%(title)s.%(ext)s"
+                        ]
+                    else:
+                        height_map = {"480p": 480, "720p": 720, "1080p": 1080}
+                        height = height_map.get(format_choice, 720)
+                        cmd = [
+                            "yt-dlp",
+                            "--js-runtimes", "node",
+                            f"ytsearch1:{search_query}",
+                            "-f", f"bestvideo[height<={height}]+bestaudio/best",
+                            "--merge-output-format", "mp4",
+                            "-o", "%(title)s.%(ext)s"
+                        ]
+                else:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text="❌ **Could not parse track info!**\n\n"
+                             "Please try a direct YouTube link instead.",
+                        parse_mode="Markdown"
+                    )
+                    os.chdir(original_dir)
+                    shutil.rmtree(download_dir, ignore_errors=True)
+                    return
+            else:
+                # Fallback: try spotdl with different approach
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="⚠️ **Spotify link not recognized.**\n\n"
+                         "Trying to search YouTube directly...",
+                    parse_mode="Markdown"
+                )
+                
+                # Use yt-dlp to search directly (less accurate but works sometimes)
+                if format_choice == "mp3":
+                    cmd = [
+                        "yt-dlp",
+                        "--js-runtimes", "node",
+                        f"ytsearch1:{url.replace('https://open.spotify.com/track/', '')}",
+                        "-f", "bestaudio/best",
+                        "--extract-audio",
+                        "--audio-format", "mp3",
+                        "--audio-quality", "192K",
+                        "-o", "%(title)s.%(ext)s"
+                    ]
+                else:
+                    height_map = {"480p": 480, "720p": 720, "1080p": 1080}
+                    height = height_map.get(format_choice, 720)
+                    cmd = [
+                        "yt-dlp",
+                        "--js-runtimes", "node",
+                        f"ytsearch1:{url.replace('https://open.spotify.com/track/', '')}",
+                        "-f", f"bestvideo[height<={height}]+bestaudio/best",
+                        "--merge-output-format", "mp4",
+                        "-o", "%(title)s.%(ext)s"
+                    ]
+        else:
+            # Direct YouTube link
+            if format_choice == "mp3":
+                cmd = [
+                    "yt-dlp",
+                    "--js-runtimes", "node",
+                    "-f", "bestaudio/best",
+                    "--extract-audio",
+                    "--audio-format", "mp3",
+                    "--audio-quality", "192K",
+                    "-o", "%(title)s.%(ext)s",
+                    url
+                ]
+            else:
+                height_map = {"480p": 480, "720p": 720, "1080p": 1080}
+                height = height_map.get(format_choice, 720)
+                cmd = [
+                    "yt-dlp",
+                    "--js-runtimes", "node",
+                    "-f", f"bestvideo[height<={height}]+bestaudio/best",
+                    "--merge-output-format", "mp4",
+                    "-o", "%(title)s.%(ext)s",
+                    url
+                ]
+        
+        # Run the download
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -283,14 +388,13 @@ async def handle_download_and_send(chat_id, url, context, format_choice):
         # Check for errors
         if process.returncode != 0:
             error_output = stderr.decode().strip()
-            # Check for known errors
+            
             if "Sign in to confirm" in error_output:
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text="❌ **YouTube Blocked Download!**\n\n"
-                         "YouTube is blocking this video.\n"
+                    text="❌ **YouTube is Blocking Downloads!**\n\n"
                          "Try a different video or use a Spotify link.\n\n"
-                         f"Error: {error_output[:150]}...",
+                         "If using Spotify, make sure it's a valid track URL.",
                     parse_mode="Markdown"
                 )
             elif "Unsupported URL" in error_output:
@@ -325,13 +429,11 @@ async def handle_download_and_send(chat_id, url, context, format_choice):
         file_path = files[0]
         file_size = os.path.getsize(file_path) / (1024 * 1024)  # MB
         
-        # Check file size (Telegram limit is 50MB)
         if file_size > 48:
             await context.bot.send_message(
                 chat_id=chat_id,
                 text=f"⚠️ **File is {file_size:.1f}MB**\n\n"
-                     "This is close to Telegram's 50MB limit.\n"
-                     "Trying to send anyway...",
+                     "Close to Telegram's 50MB limit.",
                 parse_mode="Markdown"
             )
 
@@ -374,10 +476,8 @@ async def handle_download_and_send(chat_id, url, context, format_choice):
             text=f"❌ **Download Error!**\n\n{str(e)[:200]}",
             parse_mode="Markdown"
         )
-        # Cleanup on error
         os.chdir(original_dir)
         shutil.rmtree(download_dir, ignore_errors=True)
-
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /cancel command."""
     user_id = update.effective_user.id
