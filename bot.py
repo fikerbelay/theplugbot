@@ -52,13 +52,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "I can download MP3 from YouTube and Spotify!\n\n"
         "How to use:\n"
         "1️⃣ Choose a source below\n"
-        "2️⃣ Send me a YouTube or Spotify link\n"
-        "3️⃣ I'll download the MP3 and send it to you!\n\n"
+        "2️⃣ Send me a link\n"
+        "3️⃣ I'll download the MP3 and send it!\n\n"
         "Choose your source:",
         reply_markup=InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("🎵 YouTube MP3", callback_data="youtube"),
-                InlineKeyboardButton("🎵 Spotify MP3", callback_data="spotify")
+                InlineKeyboardButton("🎵 YouTube", callback_data="youtube"),
+                InlineKeyboardButton("🎵 Spotify", callback_data="spotify")
             ],
             [
                 InlineKeyboardButton("❓ Help", callback_data="help"),
@@ -79,8 +79,8 @@ async def format_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if choice == "help":
         await query.edit_message_text(
             "📖 Help Menu\n\n"
-            "1. Choose YouTube MP3 or Spotify MP3\n"
-            "2. Send a YouTube or Spotify link\n"
+            "1. Choose YouTube or Spotify\n"
+            "2. Send me a link\n"
             "3. I'll download the MP3 and send it!\n\n"
             "Commands:\n"
             "/start - Show this menu\n"
@@ -116,8 +116,8 @@ async def format_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🎵 Welcome to THE PLUG!\n\nChoose your source:",
             reply_markup=InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("🎵 YouTube MP3", callback_data="youtube"),
-                    InlineKeyboardButton("🎵 Spotify MP3", callback_data="spotify")
+                    InlineKeyboardButton("🎵 YouTube", callback_data="youtube"),
+                    InlineKeyboardButton("🎵 Spotify", callback_data="spotify")
                 ],
                 [
                     InlineKeyboardButton("❓ Help", callback_data="help"),
@@ -132,8 +132,8 @@ async def format_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     source_name = "YouTube" if choice == "youtube" else "Spotify"
     
     await query.edit_message_text(
-        f"✅ Source selected: {source_name} MP3\n\n"
-        f"Now send me a {source_name} link!\n\n"
+        f"✅ Source selected: {source_name}\n\n"
+        f"Now send me a link!\n\n"
         f"Example: { 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' if choice == 'youtube' else 'https://open.spotify.com/track/...' }\n\n"
         "💾 Your file is yours to keep!"
     )
@@ -211,22 +211,10 @@ async def handle_download_and_send(chat_id, url, context, source):
         
         is_spotify = 'spotify.com' in url
         
-        # If user selected Spotify but sent YouTube link (or vice versa)
-        if source == 'spotify' and not is_spotify:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text="⚠️ You selected Spotify MP3 but sent a YouTube link.\n\nTrying to download anyway..."
-            )
-        elif source == 'youtube' and is_spotify:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text="⚠️ You selected YouTube MP3 but sent a Spotify link.\n\nTrying to download anyway..."
-            )
-        
         if is_spotify:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="🔍 Spotify Link Detected!\n\nSearching for this track on YouTube..."
+                text="🔍 Searching for this track on YouTube..."
             )
             
             # Get track info using spotdl
@@ -248,7 +236,7 @@ async def handle_download_and_send(chat_id, url, context, source):
                     
                     await context.bot.send_message(
                         chat_id=chat_id,
-                        text=f"🎵 Found: {artist} - {title}\n\nDownloading MP3 from YouTube..."
+                        text=f"🎵 Found: {artist} - {title}\n\nDownloading MP3..."
                     )
                     
                     cmd = [
@@ -270,7 +258,6 @@ async def handle_download_and_send(chat_id, url, context, source):
                     shutil.rmtree(download_dir, ignore_errors=True)
                     return
             else:
-                # Fallback: try direct search with track ID
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text="⚠️ Could not get track info.\n\nTrying to search YouTube directly..."
@@ -369,8 +356,7 @@ async def handle_download_and_send(chat_id, url, context, source):
             text="✅ **Sent Successfully!**\n\n"
                  "💾 This file is yours to keep!\n\n"
                  "To download more, just send another link.\n"
-                 "Send /start to go back to the menu.",
-            parse_mode="Markdown"
+                 "Send /start to go back to the menu."
         )
 
         # Clean up the temp file immediately after sending
@@ -396,8 +382,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📖 Help Menu\n\n"
         "1. Send /start to see the menu\n"
-        "2. Choose YouTube MP3 or Spotify MP3\n"
-        "3. Send a YouTube or Spotify link\n"
+        "2. Choose YouTube or Spotify\n"
+        "3. Send me a link\n"
         "4. I'll download the MP3 and send it!\n\n"
         "Supported:\n"
         "✅ YouTube videos\n"
