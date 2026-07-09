@@ -53,37 +53,46 @@ async def download_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     download_dir = f"./downloads/{update.effective_user.id}"
     os.makedirs(download_dir, exist_ok=True)
     
+    # Check if cookies file exists
+    cookie_file = "cookies.txt"
+    use_cookies = os.path.exists(cookie_file)
+    
+    if use_cookies:
+        await msg.edit_text("🔑 Using cookies for authentication...")
+    
     try:
         # Check if it's a Spotify link
         is_spotify = 'spotify.com' in query
         
         if is_spotify:
-            # Extract track name from Spotify URL using spotdl's search
-            # We'll use spotdl to get the track name, then search on YouTube
-            await msg.edit_text("🎵 Searching for this track on YouTube...")
-            
-            # Use spotdl to get the track info (not download)
+            # Use spotdl to get track name (without downloading)
             search_cmd = ["spotdl", query, "--print", "title,artist"]
             search_result = subprocess.run(search_cmd, capture_output=True, text=True, timeout=30)
             
             if search_result.returncode == 0 and search_result.stdout:
                 # Use the search result to find on YouTube
-                search_query = search_result.stdout.strip().replace('\n', ' ')
-                await msg.edit_text(f"🔍 Found: {search_query[:50]}... Downloading from YouTube")
+                search_query = search_result.stdout.strip().replace('\n', ' ').replace(',', ' ')
+                await msg.edit_text(f"🔍 Searching YouTube for: {search_query[:50]}...")
                 
-                # Now download from YouTube using yt-dlp with cookies
+                # Use yt-dlp with the search query
                 cmd = [
                     "yt-dlp",
                     f"ytsearch1:{search_query}",
-                    "--cookies", "cookies.txt",
                     "-x",
                     "--audio-format", "mp3",
                     "--audio-quality", "192K",
                     "-o", f"{download_dir}/%(title)s.%(ext)s",
-                    "--sleep-interval", "3",
-                    "--max-sleep-interval", "5",
-                    "--no-warnings"
+                    "--extractor-args", "youtube:player_client=android_embedded",
+                    "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "--no-warnings",
+                    "--no-check-certificate"
                 ]
+                
+                # Add cookies if available
+                if use_cookies:
+                    cmd.insert(2, cookie_file)
+                    cmd.insert(2, "--cookies")
+                
             else:
                 await msg.edit_text("❌ Could not find this track. Please try a YouTube link instead.")
                 return
@@ -92,15 +101,20 @@ async def download_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             cmd = [
                 "yt-dlp",
                 query,
-                "--cookies", "cookies.txt",
                 "-x",
                 "--audio-format", "mp3",
                 "--audio-quality", "192K",
                 "-o", f"{download_dir}/%(title)s.%(ext)s",
-                "--sleep-interval", "3",
-                "--max-sleep-interval", "5",
-                "--no-warnings"
+                "--extractor-args", "youtube:player_client=android_embedded",
+                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "--no-warnings",
+                "--no-check-certificate"
             ]
+            
+            # Add cookies if available
+            if use_cookies:
+                cmd.insert(2, cookie_file)
+                cmd.insert(2, "--cookies")
         
         # Run the download
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
@@ -113,17 +127,34 @@ async def download_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             if mp3_files:
                 audio_path = os.path.join(download_dir, mp3_files[0])
                 
-                # Get file size (Telegram has 50MB limit)
+                # Check file size (Telegram limit is 50MB)
                 file_size = os.path.getsize(audio_path) / (1024 * 1024)
-                if file_size > 45:
-                    await msg.edit_text(f"⚠️ File is {file_size:.1f}MB - close to Telegram's 50MB limit. Trying to compress...")
+                if file_size > 48:
+                    await msg.edit_text(f"⚠️ File is {file_size:.1f}MB - too large for Telegram (max 50MB). Trying a lower quality...")
+                    # Try again with lower quality
+                    os.remove(audio_path)
+                    
+                    # Retry with lower quality
+                    cmd_retry = cmd.copy()
+                    # Replace quality in the command
+                    for i, arg in enumerate(cmd_retry):
+                        if arg == "--audio-quality":
+                            cmd_retry[i+1] = "128K"
+                    
+                    result = subprocess.run(cmd_retry, capture_output=True, text=True, timeout=180)
+                    
+                    if result.returncode == 0:
+                        files = os.listdir(download_dir)
+                        mp3_files = [f for f in files if f.endswith('.mp3')]
+                        if mp3_files:
+                            audio_path = os.path.join(download_dir, mp3_files[0])
                 
                 # Send the audio
                 with open(audio_path, 'rb') as audio:
                     await update.message.reply_audio(
                         audio=audio,
                         filename=mp3_files[0],
-                        caption=f"🎵 {mp3_files[0][:-4]}"
+                        caption=f"🎵 {mp3_files[0][:-4][:50]}"
                     )
                 
                 os.remove(audio_path)
@@ -134,20 +165,17 @@ async def download_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             error = result.stderr if result.stderr else result.stdout
             
             # Handle specific errors
-            if "Sign in to confirm" in error:
+            if "Sign in to confirm" in error or "confirm you're not a bot" in error:
                 await msg.edit_text(
                     "❌ YouTube is blocking downloads.\n\n"
-                    "**Please try:**\n"
-                    "1. Send a **direct YouTube link** instead\n"
-                    "2. Or try a different song\n\n"
+                    "**Try this instead:**\n"
+                    "1. Refresh your cookies and re-upload `cookies.txt`\n"
+                    "2. Try a direct YouTube link (not Spotify)\n"
+                    "3. Try a different song\n\n"
                     "YouTube has strict anti-bot measures. We're working on a fix!"
                 )
-            elif "cookies" in error.lower():
-                await msg.edit_text(
-                    "❌ Cookie file not found or expired.\n\n"
-                    "**Please try a YouTube link directly:**\n"
-                    "Example: `https://www.youtube.com/watch?v=dQw4w9WgXcQ`"
-                )
+            elif "Unsupported URL" in error:
+                await msg.edit_text("❌ Unsupported URL. Please send a YouTube or Spotify link.")
             else:
                 await msg.edit_text(f"❌ Error: {error[:200]}")
             
