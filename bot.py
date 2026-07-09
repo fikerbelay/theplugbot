@@ -2,7 +2,7 @@
 THE PLUG - YouTube/Spotify MP3 Downloader Bot
 ✅ Downloads MP3 from YouTube and Spotify
 ✅ Channel subscription required
-✅ Auto-deletes after sending
+✅ Users KEEP their downloaded files (no auto-delete)
 '''
 
 import os
@@ -90,7 +90,7 @@ async def format_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✅ YouTube videos\n"
             "✅ Spotify tracks\n"
             "✅ YouTube Music\n\n"
-            "⚠️ Files auto-delete after 30 seconds!",
+            "💾 Your downloaded files are yours to keep!",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]
             ])
@@ -102,9 +102,9 @@ async def format_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔒 Privacy Policy\n\n"
             "• We do NOT store your personal data\n"
             "• Chat IDs are cached temporarily\n"
-            "• No files are saved permanently\n"
+            "• No files are saved permanently on our servers\n"
             "• Your data is never shared\n\n"
-            "Files are deleted after 30 seconds.",
+            "💾 Files are sent directly to you and not stored.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]
             ])
@@ -135,7 +135,7 @@ async def format_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Source selected: {source_name} MP3\n\n"
         f"Now send me a {source_name} link!\n\n"
         f"Example: { 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' if choice == 'youtube' else 'https://open.spotify.com/track/...' }\n\n"
-        "⚠️ Files auto-delete after 30 seconds!"
+        "💾 Your file is yours to keep!"
     )
 
 async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -363,13 +363,17 @@ async def handle_download_and_send(chat_id, url, context, source):
                 performer="THE PLUG"
             )
 
+        # Success message - NO AUTO-DELETE
         await context.bot.send_message(
             chat_id=chat_id,
-            text="✅ Sent Successfully!\n\nThis file will auto-delete in 30 seconds."
+            text="✅ **Sent Successfully!**\n\n"
+                 "💾 This file is yours to keep!\n\n"
+                 "To download more, just send another link.\n"
+                 "Send /start to go back to the menu.",
+            parse_mode="Markdown"
         )
 
-        # Wait and cleanup
-        await asyncio.sleep(30)
+        # Clean up the temp file immediately after sending
         os.chdir(original_dir)
         shutil.rmtree(download_dir, ignore_errors=True)
 
@@ -403,7 +407,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start - Show menu\n"
         "/privacy - Privacy policy\n"
         "/cancel - Cancel download\n\n"
-        "⚠️ Files auto-delete after 30 seconds!"
+        "💾 Your downloaded files are yours to keep!"
     )
 
 async def privacy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -411,9 +415,9 @@ async def privacy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔒 Privacy Policy\n\n"
         "• We do NOT store your personal data\n"
         "• Chat IDs are cached temporarily\n"
-        "• No files are saved permanently\n"
+        "• No files are saved permanently on our servers\n"
         "• Your data is never shared\n\n"
-        "Files are deleted after 30 seconds."
+        "💾 Files are sent directly to you and not stored."
     )
 
 # --- MAIN ---
