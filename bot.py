@@ -20,7 +20,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "7869986791:AAERF18jdtPm_kmdaGqKKA3Ce6W18CGgAy8")
 CHANNEL_USERNAME = "habitsofmusic"
 CHANNEL_LINK = "https://t.me/habitsofmusic"
-SUPPORT_AD_LINK = "https://your-ad-link.com"  # Change this
+SUPPORT_AD_LINK = "https://your-ad-link.com"  
 
 # --- SUBSCRIPTION CHECK ---
 async def check_user_joined_channel(app, user_id):
