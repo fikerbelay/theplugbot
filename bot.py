@@ -45,59 +45,121 @@ def require_subscription(func):
     return wrapper
 
 # --- DOWNLOAD FUNCTION ---
-async def download_and_send(update, context, url):
-    msg = await update.message.reply_text("🔍 Downloading... This may take a moment.")
+async def download_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
+    """Download and send audio using yt-dlp with cookies."""
+    msg = await update.message.reply_text("🔍 Processing your request... This may take a moment.")
     
+    # Create download folder
     download_dir = f"./downloads/{update.effective_user.id}"
     os.makedirs(download_dir, exist_ok=True)
     
     try:
-        # Use yt-dlp with browser cookies
-        cmd = [
-            "yt-dlp",
-            "--cookies-from-browser", "chrome",  # Use "firefox" if you use Firefox
-            "-x",
-            "--audio-format", "mp3",
-            "--audio-quality", "192K",
-            "-o", f"{download_dir}/%(title)s.%(ext)s",
-            "--sleep-interval", "5",  # Add delay to avoid rate limiting
-            "--max-sleep-interval", "10",
-            url
-        ]
+        # Check if it's a Spotify link
+        is_spotify = 'spotify.com' in query
         
+        if is_spotify:
+            # Extract track name from Spotify URL using spotdl's search
+            # We'll use spotdl to get the track name, then search on YouTube
+            await msg.edit_text("🎵 Searching for this track on YouTube...")
+            
+            # Use spotdl to get the track info (not download)
+            search_cmd = ["spotdl", query, "--print", "title,artist"]
+            search_result = subprocess.run(search_cmd, capture_output=True, text=True, timeout=30)
+            
+            if search_result.returncode == 0 and search_result.stdout:
+                # Use the search result to find on YouTube
+                search_query = search_result.stdout.strip().replace('\n', ' ')
+                await msg.edit_text(f"🔍 Found: {search_query[:50]}... Downloading from YouTube")
+                
+                # Now download from YouTube using yt-dlp with cookies
+                cmd = [
+                    "yt-dlp",
+                    f"ytsearch1:{search_query}",
+                    "--cookies", "cookies.txt",
+                    "-x",
+                    "--audio-format", "mp3",
+                    "--audio-quality", "192K",
+                    "-o", f"{download_dir}/%(title)s.%(ext)s",
+                    "--sleep-interval", "3",
+                    "--max-sleep-interval", "5",
+                    "--no-warnings"
+                ]
+            else:
+                await msg.edit_text("❌ Could not find this track. Please try a YouTube link instead.")
+                return
+        else:
+            # Direct YouTube link or search
+            cmd = [
+                "yt-dlp",
+                query,
+                "--cookies", "cookies.txt",
+                "-x",
+                "--audio-format", "mp3",
+                "--audio-quality", "192K",
+                "-o", f"{download_dir}/%(title)s.%(ext)s",
+                "--sleep-interval", "3",
+                "--max-sleep-interval", "5",
+                "--no-warnings"
+            ]
+        
+        # Run the download
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
         
         if result.returncode == 0:
+            # Find downloaded file
             files = os.listdir(download_dir)
             mp3_files = [f for f in files if f.endswith('.mp3')]
             
             if mp3_files:
                 audio_path = os.path.join(download_dir, mp3_files[0])
+                
+                # Get file size (Telegram has 50MB limit)
+                file_size = os.path.getsize(audio_path) / (1024 * 1024)
+                if file_size > 45:
+                    await msg.edit_text(f"⚠️ File is {file_size:.1f}MB - close to Telegram's 50MB limit. Trying to compress...")
+                
+                # Send the audio
                 with open(audio_path, 'rb') as audio:
                     await update.message.reply_audio(
                         audio=audio,
                         filename=mp3_files[0],
-                        caption="🎵 Here's your track!"
+                        caption=f"🎵 {mp3_files[0][:-4]}"
                     )
+                
                 os.remove(audio_path)
+                await msg.delete()
             else:
                 await msg.edit_text("❌ No MP3 file created.")
         else:
             error = result.stderr if result.stderr else result.stdout
-            # Check for specific errors
+            
+            # Handle specific errors
             if "Sign in to confirm" in error:
-                await msg.edit_text("❌ YouTube is blocking downloads. Please try a different video or use a Spotify link instead.")
+                await msg.edit_text(
+                    "❌ YouTube is blocking downloads.\n\n"
+                    "**Please try:**\n"
+                    "1. Send a **direct YouTube link** instead\n"
+                    "2. Or try a different song\n\n"
+                    "YouTube has strict anti-bot measures. We're working on a fix!"
+                )
+            elif "cookies" in error.lower():
+                await msg.edit_text(
+                    "❌ Cookie file not found or expired.\n\n"
+                    "**Please try a YouTube link directly:**\n"
+                    "Example: `https://www.youtube.com/watch?v=dQw4w9WgXcQ`"
+                )
             else:
                 await msg.edit_text(f"❌ Error: {error[:200]}")
             
     except subprocess.TimeoutExpired:
-        await msg.edit_text("⏰ Timeout - try a shorter video or different link.")
+        await msg.edit_text("⏰ Download took too long. Please try a shorter video or different link.")
     except Exception as e:
         await msg.edit_text(f"❌ Error: {str(e)[:200]}")
     finally:
+        # Clean up
         shutil.rmtree(download_dir, ignore_errors=True)
-        await msg.delete()
-        
+
+
 # --- COMMAND HANDLERS ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
