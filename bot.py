@@ -1,8 +1,9 @@
 '''
 THE PLUG - Smart Music Downloader
-✅ Auto-detects YouTube, Spotify, Deezer links
-✅ Auto-detects song names (searches YouTube)
-✅ One-step process - just send a link or song name
+✅ Primary: Deezer (best quality, no blocking)
+✅ Fallback 1: YouTube (with cookies support)
+✅ Fallback 2: Spotify (searches YouTube)
+✅ Auto-detects links and song names
 ✅ Channel subscription required
 '''
 
@@ -41,7 +42,7 @@ async def check_user_joined_channel(app, user_id):
 # --- DOWNLOAD FUNCTIONS ---
 
 async def download_from_deezer(chat_id, url):
-    """Download MP3 from Deezer."""
+    """Download MP3 from Deezer using ARL."""
     try:
         download_dir = f"./downloads/{chat_id}"
         os.makedirs(download_dir, exist_ok=True)
@@ -60,16 +61,22 @@ async def download_from_deezer(chat_id, url):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await process.communicate()
+        stdout, stderr = await process.communicate(timeout=120)
         
         if process.returncode != 0:
-            return None, stderr.decode().strip()
+            error_msg = stderr.decode().strip()
+            if "NotLoggedIn" in error_msg or "Invalid" in error_msg:
+                return None, "Deezer ARL is invalid or expired. Please update your ARL."
+            return None, error_msg
         
+        # Find downloaded file
         files = glob.glob(f"{download_dir}/*.mp3")
         if files:
             return files[0], None
         return None, "No MP3 file created"
         
+    except subprocess.TimeoutExpired:
+        return None, "Deezer download timed out"
     except Exception as e:
         return None, str(e)
 
@@ -79,6 +86,9 @@ async def download_from_youtube(chat_id, query):
         download_dir = f"./downloads/{chat_id}"
         os.makedirs(download_dir, exist_ok=True)
         
+        # Check if cookies file exists
+        cookies_opt = ["--cookies", "cookies.txt"] if os.path.exists("cookies.txt") else []
+        
         cmd = [
             "yt-dlp",
             "--js-runtimes", "node",
@@ -87,20 +97,21 @@ async def download_from_youtube(chat_id, query):
             "--audio-format", "mp3",
             "--audio-quality", "192K",
             "-o", f"{download_dir}/%(title)s.%(ext)s",
-            query
-        ]
+            "--no-warnings",
+            "--no-check-certificate"
+        ] + cookies_opt + [query]
         
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await process.communicate()
+        stdout, stderr = await process.communicate(timeout=180)
         
         if process.returncode != 0:
             error = stderr.decode().strip()
-            if "Sign in to confirm" in error:
-                return None, "YouTube is blocking this request. Try using a Deezer or Spotify link instead."
+            if "Sign in to confirm" in error or "HTTP Error 429" in error:
+                return None, "YouTube is blocking this request. Please try a Deezer or Spotify link instead."
             return None, error
         
         files = glob.glob(f"{download_dir}/*.mp3")
@@ -108,6 +119,8 @@ async def download_from_youtube(chat_id, query):
             return files[0], None
         return None, "No MP3 file created"
         
+    except subprocess.TimeoutExpired:
+        return None, "YouTube download timed out"
     except Exception as e:
         return None, str(e)
 
@@ -125,20 +138,23 @@ async def search_spotify_and_download(chat_id, url):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await process.communicate()
+        stdout, stderr = await process.communicate(timeout=30)
         
         if process.returncode != 0:
-            return None, "Could not get track info"
+            return None, "Could not get Spotify track info"
         
         track_info = stdout.decode().strip().split(',')
         if len(track_info) < 2:
-            return None, "Could not parse track info"
+            return None, "Could not parse Spotify track info"
         
         artist = track_info[0].strip()
         title = track_info[1].strip()
         search_query = f"{artist} {title} audio"
         
-        # Now download from YouTube
+        # Check if cookies file exists
+        cookies_opt = ["--cookies", "cookies.txt"] if os.path.exists("cookies.txt") else []
+        
+        # Download from YouTube
         cmd = [
             "yt-dlp",
             "--js-runtimes", "node",
@@ -147,20 +163,22 @@ async def search_spotify_and_download(chat_id, url):
             "--extract-audio",
             "--audio-format", "mp3",
             "--audio-quality", "192K",
-            "-o", f"{download_dir}/%(title)s.%(ext)s"
-        ]
+            "-o", f"{download_dir}/%(title)s.%(ext)s",
+            "--no-warnings",
+            "--no-check-certificate"
+        ] + cookies_opt
         
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await process.communicate()
+        stdout, stderr = await process.communicate(timeout=180)
         
         if process.returncode != 0:
             error = stderr.decode().strip()
-            if "Sign in to confirm" in error:
-                return None, "YouTube is blocking this request. Try using a Deezer link instead."
+            if "Sign in to confirm" in error or "HTTP Error 429" in error:
+                return None, "YouTube is blocking this request. Please try a Deezer link instead."
             return None, error
         
         files = glob.glob(f"{download_dir}/*.mp3")
@@ -168,10 +186,152 @@ async def search_spotify_and_download(chat_id, url):
             return files[0], None
         return None, "No MP3 file created"
         
+    except subprocess.TimeoutExpired:
+        return None, "Spotify download timed out"
     except Exception as e:
         return None, str(e)
 
-# --- MAIN COMMAND HANDLERS ---
+# --- SMART DOWNLOAD WITH FALLBACK CHAIN ---
+
+async def smart_download(chat_id, user_input, status_msg):
+    """Smart download with fallback chain: Deezer -> Spotify -> YouTube."""
+    
+    is_url = user_input.startswith('http://') or user_input.startswith('https://')
+    
+    # ============================================
+    # STRATEGY 1: Deezer (PRIMARY - Most Reliable)
+    # ============================================
+    if is_url and 'deezer.com' in user_input:
+        await status_msg.edit_text("🎵 Downloading from Deezer...")
+        result, error = await download_from_deezer(chat_id, user_input)
+        if result:
+            return result, None
+        await status_msg.edit_text(f"⚠️ Deezer failed: {error[:100]}\nTrying next source...")
+    
+    # ============================================
+    # STRATEGY 2: Spotify (If it's a Spotify link)
+    # ============================================
+    if is_url and 'spotify.com' in user_input:
+        await status_msg.edit_text("🎵 Processing Spotify link...")
+        result, error = await search_spotify_and_download(chat_id, user_input)
+        if result:
+            return result, None
+        await status_msg.edit_text(f"⚠️ Spotify failed: {error[:100]}\nTrying next source...")
+    
+    # ============================================
+    # STRATEGY 3: YouTube (Direct link)
+    # ============================================
+    if is_url and ('youtube.com' in user_input or 'youtu.be' in user_input):
+        await status_msg.edit_text("🎵 Downloading from YouTube...")
+        result, error = await download_from_youtube(chat_id, user_input)
+        if result:
+            return result, None
+        await status_msg.edit_text(f"⚠️ YouTube failed: {error[:100]}\nTrying next source...")
+    
+    # ============================================
+    # STRATEGY 4: Song Name (Search YouTube)
+    # ============================================
+    if not is_url:
+        await status_msg.edit_text(f"🔍 Searching YouTube for: {user_input[:50]}...")
+        result, error = await download_from_youtube(chat_id, f"ytsearch1:{user_input}")
+        if result:
+            return result, None
+    
+    # ============================================
+    # STRATEGY 5: Generic URL - Try Everything
+    # ============================================
+    if is_url:
+        await status_msg.edit_text("🔍 Trying all sources...")
+        
+        # Try Deezer
+        try:
+            result, error = await download_from_deezer(chat_id, user_input)
+            if result:
+                return result, None
+        except:
+            pass
+        
+        # Try YouTube
+        try:
+            result, error = await download_from_youtube(chat_id, user_input)
+            if result:
+                return result, None
+        except:
+            pass
+        
+        return None, "Could not download from any source. Please try a different link."
+    
+    return None, "Invalid input. Please send a link or song name."
+
+# --- MESSAGE HANDLER ---
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle any message (link or song name)."""
+    user_input = update.message.text.strip()
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+
+    # Check if user joined channel
+    joined = await check_user_joined_channel(context.application, user_id)
+    if not joined:
+        await update.message.reply_text(
+            "🚫 Access Denied!\n\nYou must join @habitsofmusic first!",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📢 Join Channel", url=CHANNEL_LINK)],
+                [InlineKeyboardButton("✅ I've Joined! Check Again", callback_data="check_join")]
+            ])
+        )
+        return
+
+    # Send initial response
+    status_msg = await update.message.reply_text("🔍 Processing your request...")
+
+    # Start download with fallback chain
+    file_path, error = await smart_download(chat_id, user_input, status_msg)
+
+    if file_path:
+        try:
+            # Send the MP3
+            file_size = os.path.getsize(file_path) / (1024 * 1024)
+            if file_size > 48:
+                await status_msg.edit_text(f"⚠️ File is {file_size:.1f}MB - close to Telegram's 50MB limit.")
+            else:
+                await status_msg.delete()
+            
+            with open(file_path, 'rb') as f:
+                await update.message.reply_audio(
+                    audio=f,
+                    read_timeout=120,
+                    write_timeout=120,
+                    filename=os.path.basename(file_path),
+                    title=os.path.basename(file_path)[:-4],
+                    performer="THE PLUG"
+                )
+            
+            await update.message.reply_text(
+                "✅ Sent Successfully!\n\n"
+                "💾 This file is yours to keep!\n"
+                "Just send me another link to continue."
+            )
+            
+        except Exception as e:
+            await status_msg.edit_text(f"❌ Error sending file: {str(e)[:200]}")
+        finally:
+            try:
+                os.remove(file_path)
+            except:
+                pass
+    else:
+        await status_msg.edit_text(f"❌ Download Failed!\n\n{error or 'Unknown error'}")
+
+    # Clean up
+    try:
+        download_dir = f"./downloads/{chat_id}"
+        shutil.rmtree(download_dir, ignore_errors=True)
+    except:
+        pass
+
+# --- COMMAND HANDLERS ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -179,7 +339,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not joined:
         await update.message.reply_text(
-            "🚫 Access Denied!\n\nYou must join @habitsofmusic to use this bot.\n\nClick below to join, then try again!",
+            "🚫 Access Denied!\n\nYou must join @habitsofmusic to use this bot.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📢 Join Channel", url=CHANNEL_LINK)],
                 [InlineKeyboardButton("✅ I've Joined! Check Again", callback_data="check_join")]
@@ -191,10 +351,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎵 Welcome to THE PLUG!\n\n"
         "Just send me any link and I'll download the MP3!\n\n"
         "Supported:\n"
-        "✅ Deezer links\n"
+        "✅ Deezer links (BEST - no blocking)\n"
         "✅ YouTube links\n"
         "✅ Spotify links\n"
-        "✅ Song names (I'll search YouTube)\n\n"
+        "✅ Song names (I'll search)\n\n"
         "💾 Files are yours to keep!\n"
         "Send /help for more info."
     )
@@ -215,134 +375,12 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         await query.edit_message_text(
             "❌ Still Not Joined!\n\n"
-            "Please join @habitsofmusic first:\n"
-            f"{CHANNEL_LINK}\n\n"
-            "Then click 'I've Joined! Check Again'.",
+            "Please join @habitsofmusic first:",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📢 Join Channel", url=CHANNEL_LINK)],
                 [InlineKeyboardButton("✅ I've Joined! Check Again", callback_data="check_join")]
             ])
         )
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle any message (link or song name)."""
-    user_input = update.message.text.strip()
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-
-    # Check if user joined channel
-    joined = await check_user_joined_channel(context.application, user_id)
-    if not joined:
-        await update.message.reply_text(
-            "🚫 Access Denied!\n\nYou must join @habitsofmusic first!\n" + CHANNEL_LINK,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📢 Join Channel", url=CHANNEL_LINK)],
-                [InlineKeyboardButton("✅ I've Joined! Check Again", callback_data="check_join")]
-            ])
-        )
-        return
-
-    # Send initial response
-    status_msg = await update.message.reply_text("🔍 Processing your request...")
-
-    # Start download
-    file_path, error = await smart_download(chat_id, user_input, status_msg)
-
-    if file_path:
-        # Send the MP3
-        try:
-            file_size = os.path.getsize(file_path) / (1024 * 1024)
-            if file_size > 48:
-                await status_msg.edit_text(f"⚠️ File is {file_size:.1f}MB - close to Telegram's 50MB limit.")
-            
-            with open(file_path, 'rb') as f:
-                await update.message.reply_audio(
-                    audio=f,
-                    read_timeout=120,
-                    write_timeout=120,
-                    filename=os.path.basename(file_path),
-                    title=os.path.basename(file_path)[:-4],
-                    performer="THE PLUG"
-                )
-            
-            await status_msg.delete()
-            await update.message.reply_text(
-                "✅ Sent Successfully!\n\n"
-                "💾 This file is yours to keep!\n"
-                "Just send me another link to continue."
-            )
-            
-        except Exception as e:
-            await status_msg.edit_text(f"❌ Error sending file: {str(e)[:200]}")
-        finally:
-            # Clean up
-            try:
-                os.remove(file_path)
-            except:
-                pass
-    else:
-        await status_msg.edit_text(f"❌ Download Failed!\n\n{error or 'Unknown error'}")
-
-    # Clean up download directory
-    try:
-        download_dir = f"./downloads/{chat_id}"
-        shutil.rmtree(download_dir, ignore_errors=True)
-    except:
-        pass
-
-async def smart_download(chat_id, user_input, status_msg):
-    """Smart download that detects the source automatically."""
-    
-    # Check if it's a URL
-    is_url = user_input.startswith('http://') or user_input.startswith('https://')
-    
-    # --- STRATEGY 1: Deezer ---
-    if is_url and 'deezer.com' in user_input:
-        await status_msg.edit_text("🎵 Downloading from Deezer...")
-        return await download_from_deezer(chat_id, user_input)
-    
-    # --- STRATEGY 2: YouTube ---
-    if is_url and ('youtube.com' in user_input or 'youtu.be' in user_input):
-        await status_msg.edit_text("🎵 Downloading from YouTube...")
-        return await download_from_youtube(chat_id, user_input)
-    
-    # --- STRATEGY 3: Spotify ---
-    if is_url and 'spotify.com' in user_input:
-        await status_msg.edit_text("🎵 Processing Spotify link...")
-        return await search_spotify_and_download(chat_id, user_input)
-    
-    # --- STRATEGY 4: Song Name (Search YouTube) ---
-    if not is_url:
-        await status_msg.edit_text(f"🔍 Searching YouTube for: {user_input[:50]}...")
-        return await download_from_youtube(chat_id, f"ytsearch1:{user_input}")
-    
-    # --- STRATEGY 5: Generic Link (Try everything) ---
-    if is_url:
-        await status_msg.edit_text("🔍 Trying to detect source...")
-        
-        # Try Deezer first (most reliable)
-        try:
-            result, error = await download_from_deezer(chat_id, user_input)
-            if result:
-                await status_msg.edit_text("✅ Downloaded from Deezer!")
-                return result, None
-        except:
-            pass
-        
-        # Try YouTube as fallback
-        try:
-            result, error = await download_from_youtube(chat_id, user_input)
-            if result:
-                await status_msg.edit_text("✅ Downloaded from YouTube!")
-                return result, None
-        except:
-            pass
-        
-        return None, "Could not download from any source. Please try a different link."
-    
-    return None, "Invalid input. Please send a link or song name."
-
-# --- COMMAND HANDLERS ---
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -364,7 +402,7 @@ async def privacy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔒 Privacy Policy\n\n"
         "• We do NOT store your personal data\n"
         "• Chat IDs are cached temporarily\n"
-        "• No files are saved permanently on our servers\n"
+        "• No files are saved permanently\n"
         "• Your data is never shared\n\n"
         "💾 Files are sent directly to you and not stored."
     )
@@ -384,16 +422,14 @@ def main():
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CallbackQueryHandler(check_join_callback, pattern="^check_join$"))
     
-    # Handle all text messages (links, song names, etc.)
+    # Handle all text messages
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("🤖 THE PLUG is running...")
     print("📢 Channel: @habitsofmusic")
-    print("🎵 Auto-detects: Deezer, YouTube, Spotify, Song Names")
+    print("🎵 Primary: Deezer | Fallbacks: Spotify -> YouTube")
+    print(f"🔑 Deezer ARL: {'✅ Loaded' if DEEZER_ARL != 'PASTE_YOUR_190_CHARACTER_ARL_HERE' else '❌ NOT SET'}")
     app.run_polling()
-
-if __name__ == "__main__":
-    main()
 
 if __name__ == "__main__":
     main()
