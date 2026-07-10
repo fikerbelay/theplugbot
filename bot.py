@@ -1,8 +1,9 @@
 '''
-THE PLUG - YouTube/Spotify MP3 Downloader Bot
-✅ Downloads MP3 from YouTube and Spotify
+THE PLUG - MP3 Downloader Bot
+✅ Downloads from Deezer (best quality, no blocking)
+✅ Falls back to YouTube/Spotify if Deezer fails
 ✅ Channel subscription required
-✅ Users KEEP their downloaded files (no auto-delete)
+✅ Users KEEP their downloaded files
 '''
 
 import os
@@ -20,7 +21,10 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "7869986791:AAERF18jdtPm_kmdaGqKKA3Ce6W18CGgAy8")
 CHANNEL_USERNAME = "habitsofmusic"
 CHANNEL_LINK = "https://t.me/habitsofmusic"
-SUPPORT_AD_LINK = "https://your-ad-link.com"  
+SUPPORT_AD_LINK = "https://your-ad-link.com"
+
+# --- DEEZER ARL COOKIE ---
+DEEZER_ARL = "5fa1931347e4baec15cd38eff6de9f0f47bd764ce7d06ca62ca9af37e5acc6bf36db17ce66ffa00fa29fc200de3e91ef8181eabd6c1b246a00483ec93cdc750e8119f6eacaf960543b8ef7d7ac70c77fe903364a6d1701495a97a99d8cc33b8e"
 
 # --- SUBSCRIPTION CHECK ---
 async def check_user_joined_channel(app, user_id):
@@ -30,6 +34,155 @@ async def check_user_joined_channel(app, user_id):
     except Exception as e:
         print(f"[Channel Join Check Error] {e}")
         return False
+
+# --- DEEZER DOWNLOAD FUNCTION ---
+async def download_from_deezer(chat_id, context, url):
+    """Download MP3 from Deezer using the ARL cookie."""
+    try:
+        # Try to import deezloader or deezspot
+        try:
+            from deezspot.deezloader import DeeLogin
+            deezer = DeeLogin(arl=DEEZER_ARL)
+        except ImportError:
+            # Fallback: use subprocess with deezloader
+            download_dir = f"./downloads/{chat_id}"
+            os.makedirs(download_dir, exist_ok=True)
+            
+            cmd = [
+                "deezloader",
+                "--arl", DEEZER_ARL,
+                "--output", download_dir,
+                "--quality", "MP3_320",
+                url
+            ]
+            
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+            
+            if process.returncode != 0:
+                return None, stderr.decode().strip()
+            
+            # Find downloaded file
+            files = glob.glob(f"{download_dir}/*.mp3")
+            if files:
+                return files[0], None
+            return None, "No MP3 file created"
+        
+        # If using deezspot library directly
+        download_dir = f"./downloads/{chat_id}"
+        os.makedirs(download_dir, exist_ok=True)
+        
+        deezer.download_trackdee(
+            link_track=url,
+            output_dir=download_dir,
+            quality_download='MP3_320'
+        )
+        
+        # Find downloaded file
+        files = glob.glob(f"{download_dir}/*.mp3")
+        if files:
+            return files[0], None
+        return None, "No MP3 file created"
+        
+    except Exception as e:
+        return None, str(e)
+
+# --- YOUTUBE DOWNLOAD FUNCTION ---
+async def download_from_youtube(chat_id, url):
+    """Download MP3 from YouTube."""
+    try:
+        download_dir = f"./downloads/{chat_id}"
+        os.makedirs(download_dir, exist_ok=True)
+        
+        cmd = [
+            "yt-dlp",
+            "--js-runtimes", "node",
+            "-f", "bestaudio/best",
+            "--extract-audio",
+            "--audio-format", "mp3",
+            "--audio-quality", "192K",
+            "-o", f"{download_dir}/%(title)s.%(ext)s",
+            url
+        ]
+        
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode != 0:
+            return None, stderr.decode().strip()
+        
+        files = glob.glob(f"{download_dir}/*.mp3")
+        if files:
+            return files[0], None
+        return None, "No MP3 file created"
+        
+    except Exception as e:
+        return None, str(e)
+
+# --- SPOTIFY SEARCH FUNCTION ---
+async def search_spotify_and_download(chat_id, url):
+    """Search for Spotify track on YouTube and download."""
+    try:
+        download_dir = f"./downloads/{chat_id}"
+        os.makedirs(download_dir, exist_ok=True)
+        
+        # Get track info using spotdl
+        spotdl_cmd = ["spotdl", url, "--print", "title,artist"]
+        
+        process = await asyncio.create_subprocess_exec(
+            *spotdl_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode != 0:
+            return None, "Could not get track info"
+        
+        track_info = stdout.decode().strip().split(',')
+        if len(track_info) < 2:
+            return None, "Could not parse track info"
+        
+        artist = track_info[0].strip()
+        title = track_info[1].strip()
+        search_query = f"{artist} {title} audio"
+        
+        cmd = [
+            "yt-dlp",
+            "--js-runtimes", "node",
+            f"ytsearch1:{search_query}",
+            "-f", "bestaudio/best",
+            "--extract-audio",
+            "--audio-format", "mp3",
+            "--audio-quality", "192K",
+            "-o", f"{download_dir}/%(title)s.%(ext)s"
+        ]
+        
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode != 0:
+            return None, stderr.decode().strip()
+        
+        files = glob.glob(f"{download_dir}/*.mp3")
+        if files:
+            return files[0], None
+        return None, "No MP3 file created"
+        
+    except Exception as e:
+        return None, str(e)
 
 # --- COMMAND HANDLERS ---
 
@@ -49,14 +202,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "🎵 Welcome to THE PLUG!\n\n"
-        "I can download MP3 from YouTube and Spotify!\n\n"
+        "I can download MP3 from Deezer, YouTube, and Spotify!\n\n"
         "How to use:\n"
         "1️⃣ Choose a source below\n"
         "2️⃣ Send me a link\n"
         "3️⃣ I'll download the MP3 and send it!\n\n"
-        "Choose your source:",
+        "🔹 Deezer is best - no blocking!",
         reply_markup=InlineKeyboardMarkup([
             [
+                InlineKeyboardButton("🎵 Deezer", callback_data="deezer"),
                 InlineKeyboardButton("🎵 YouTube", callback_data="youtube"),
                 InlineKeyboardButton("🎵 Spotify", callback_data="spotify")
             ],
@@ -79,7 +233,7 @@ async def format_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if choice == "help":
         await query.edit_message_text(
             "📖 Help Menu\n\n"
-            "1. Choose YouTube or Spotify\n"
+            "1. Choose Deezer, YouTube, or Spotify\n"
             "2. Send me a link\n"
             "3. I'll download the MP3 and send it!\n\n"
             "Commands:\n"
@@ -87,9 +241,9 @@ async def format_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/privacy - Privacy policy\n"
             "/cancel - Cancel download\n\n"
             "Supported:\n"
+            "✅ Deezer tracks\n"
             "✅ YouTube videos\n"
-            "✅ Spotify tracks\n"
-            "✅ YouTube Music\n\n"
+            "✅ Spotify tracks\n\n"
             "💾 Your downloaded files are yours to keep!",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]
@@ -116,6 +270,7 @@ async def format_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🎵 Welcome to THE PLUG!\n\nChoose your source:",
             reply_markup=InlineKeyboardMarkup([
                 [
+                    InlineKeyboardButton("🎵 Deezer", callback_data="deezer"),
                     InlineKeyboardButton("🎵 YouTube", callback_data="youtube"),
                     InlineKeyboardButton("🎵 Spotify", callback_data="spotify")
                 ],
@@ -127,14 +282,14 @@ async def format_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Store the user's choice (youtube or spotify)
+    # Store the user's choice
     context.user_data['source'] = choice
-    source_name = "YouTube" if choice == "youtube" else "Spotify"
+    source_name = "Deezer" if choice == "deezer" else ("YouTube" if choice == "youtube" else "Spotify")
     
     await query.edit_message_text(
         f"✅ Source selected: {source_name}\n\n"
         f"Now send me a link!\n\n"
-        f"Example: { 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' if choice == 'youtube' else 'https://open.spotify.com/track/...' }\n\n"
+        f"Example: { 'https://www.deezer.com/track/...' if choice == 'deezer' else ('https://www.youtube.com/watch?v=...' if choice == 'youtube' else 'https://open.spotify.com/track/...') }\n\n"
         "💾 Your file is yours to keep!"
     )
 
@@ -180,164 +335,83 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Check if it's a valid link
-    if not any(domain in url for domain in ['youtube.com', 'youtu.be', 'spotify.com']):
-        await update.message.reply_text(
-            "❌ Invalid Link!\n\n"
-            "Please send a valid YouTube or Spotify link.\n\n"
-            "Examples:\n"
-            "https://www.youtube.com/watch?v=...\n"
-            "https://open.spotify.com/track/..."
-        )
-        return
-
-    # Get source preference (default to youtube)
-    source = context.user_data.get('source', 'youtube')
+    # Get source preference (default to deezer)
+    source = context.user_data.get('source', 'deezer')
     
     await update.message.reply_text(
-        f"✅ Received!\n\nSource: {'YouTube' if source == 'youtube' else 'Spotify'}\n"
+        f"✅ Received!\n\nSource: {source.capitalize()}\n"
         "⏳ Downloading MP3, please wait..."
     )
     
+    # Start download
     asyncio.create_task(handle_download_and_send(chat_id, url, context, source))
 
 async def handle_download_and_send(chat_id, url, context, source):
+    file_path = None
+    error = None
+    
     try:
-        download_dir = f"./downloads/{chat_id}"
-        os.makedirs(download_dir, exist_ok=True)
-        
-        original_dir = os.getcwd()
-        os.chdir(download_dir)
-        
-        is_spotify = 'spotify.com' in url
-        
-        if is_spotify:
+        # Try Deezer first if source is deezer or auto
+        if source == "deezer" or source == "auto":
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="🔍 Searching for this track on YouTube..."
+                text="🎵 Downloading from Deezer..."
             )
+            file_path, error = await download_from_deezer(chat_id, context, url)
             
-            # Get track info using spotdl
-            spotdl_cmd = ["spotdl", url, "--print", "title,artist"]
+            if file_path:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="✅ Downloaded from Deezer!"
+                )
+        
+        # If Deezer failed or not selected, try YouTube
+        if not file_path and (source == "youtube" or source == "auto"):
+            if source == "auto" and error and "Deezer" in error:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="⚠️ Deezer failed, trying YouTube..."
+                )
             
-            process = await asyncio.create_subprocess_exec(
-                *spotdl_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await process.communicate()
-            
-            if process.returncode == 0 and stdout:
-                track_info = stdout.decode().strip().split(',')
-                if len(track_info) >= 2:
-                    artist = track_info[0].strip()
-                    title = track_info[1].strip()
-                    search_query = f"{artist} {title} audio"
-                    
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"🎵 Found: {artist} - {title}\n\nDownloading MP3..."
-                    )
-                    
-                    cmd = [
-                        "yt-dlp",
-                        "--js-runtimes", "node",
-                        f"ytsearch1:{search_query}",
-                        "-f", "bestaudio/best",
-                        "--extract-audio",
-                        "--audio-format", "mp3",
-                        "--audio-quality", "192K",
-                        "-o", "%(title)s.%(ext)s"
-                    ]
+            if "youtube.com" in url or "youtu.be" in url:
+                file_path, error = await download_from_youtube(chat_id, url)
+            elif "spotify.com" in url:
+                file_path, error = await search_spotify_and_download(chat_id, url)
+            else:
+                # Try to detect link type
+                if "deezer.com" in url:
+                    file_path, error = await download_from_deezer(chat_id, context, url)
                 else:
                     await context.bot.send_message(
                         chat_id=chat_id,
-                        text="❌ Could not parse track info!\n\nPlease try a direct YouTube link instead."
+                        text="❌ Unsupported link format!\n\nPlease send a valid Deezer, YouTube, or Spotify link."
                     )
-                    os.chdir(original_dir)
-                    shutil.rmtree(download_dir, ignore_errors=True)
                     return
-            else:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text="⚠️ Could not get track info.\n\nTrying to search YouTube directly..."
-                )
-                
-                track_id = url.split('/')[-1].split('?')[0]
-                cmd = [
-                    "yt-dlp",
-                    "--js-runtimes", "node",
-                    f"ytsearch1:{track_id}",
-                    "-f", "bestaudio/best",
-                    "--extract-audio",
-                    "--audio-format", "mp3",
-                    "--audio-quality", "192K",
-                    "-o", "%(title)s.%(ext)s"
-                ]
-        else:
-            # Direct YouTube link
-            cmd = [
-                "yt-dlp",
-                "--js-runtimes", "node",
-                "-f", "bestaudio/best",
-                "--extract-audio",
-                "--audio-format", "mp3",
-                "--audio-quality", "192K",
-                "-o", "%(title)s.%(ext)s",
-                url
-            ]
         
-        # Run the download
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
-
-        # Check for errors
-        if process.returncode != 0:
-            error_output = stderr.decode().strip()
-            
-            if "Sign in to confirm" in error_output:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text="❌ YouTube is Blocking Downloads!\n\nTry a different video or use a Spotify link."
-                )
-            elif "Unsupported URL" in error_output:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text="❌ Unsupported URL!\n\nPlease send a valid YouTube or Spotify link."
-                )
-            else:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"❌ Download Failed!\n\nError: {error_output[:200]}"
-                )
-            os.chdir(original_dir)
-            shutil.rmtree(download_dir, ignore_errors=True)
-            return
-
-        # Find downloaded file
-        files = glob.glob("*.mp3")
-        if not files:
+        # If still no file, try Spotify fallback
+        if not file_path and "spotify.com" in url:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="❌ Download Failed!\n\nNo MP3 file found after download."
+                text="🎵 Searching Spotify on YouTube..."
             )
-            os.chdir(original_dir)
-            shutil.rmtree(download_dir, ignore_errors=True)
-            return
-
-        file_path = files[0]
-        file_size = os.path.getsize(file_path) / (1024 * 1024)  # MB
+            file_path, error = await search_spotify_and_download(chat_id, url)
         
+        # Check if we have a file
+        if not file_path:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"❌ Download Failed!\n\nError: {error or 'Unknown error'}"
+            )
+            return
+        
+        # Check file size
+        file_size = os.path.getsize(file_path) / (1024 * 1024)
         if file_size > 48:
             await context.bot.send_message(
                 chat_id=chat_id,
                 text=f"⚠️ File is {file_size:.1f}MB\n\nClose to Telegram's 50MB limit."
             )
-
+        
         # Send the MP3
         with open(file_path, 'rb') as f:
             await context.bot.send_audio(
@@ -349,8 +423,7 @@ async def handle_download_and_send(chat_id, url, context, source):
                 title=os.path.basename(file_path)[:-4],
                 performer="THE PLUG"
             )
-
-        # Success message - NO AUTO-DELETE
+        
         await context.bot.send_message(
             chat_id=chat_id,
             text="✅ **Sent Successfully!**\n\n"
@@ -358,18 +431,25 @@ async def handle_download_and_send(chat_id, url, context, source):
                  "To download more, just send another link.\n"
                  "Send /start to go back to the menu."
         )
-
-        # Clean up the temp file immediately after sending
-        os.chdir(original_dir)
-        shutil.rmtree(download_dir, ignore_errors=True)
-
+        
+        # Clean up
+        try:
+            os.remove(file_path)
+        except:
+            pass
+            
     except Exception as e:
         await context.bot.send_message(
             chat_id=chat_id,
             text=f"❌ Download Error!\n\n{str(e)[:200]}"
         )
-        os.chdir(original_dir)
-        shutil.rmtree(download_dir, ignore_errors=True)
+    finally:
+        # Clean up download directory
+        try:
+            download_dir = f"./downloads/{chat_id}"
+            shutil.rmtree(download_dir, ignore_errors=True)
+        except:
+            pass
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -382,13 +462,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📖 Help Menu\n\n"
         "1. Send /start to see the menu\n"
-        "2. Choose YouTube or Spotify\n"
+        "2. Choose Deezer, YouTube, or Spotify\n"
         "3. Send me a link\n"
         "4. I'll download the MP3 and send it!\n\n"
         "Supported:\n"
+        "✅ Deezer tracks (BEST - no blocking)\n"
         "✅ YouTube videos\n"
-        "✅ Spotify tracks\n"
-        "✅ YouTube Music\n\n"
+        "✅ Spotify tracks\n\n"
         "Commands:\n"
         "/start - Show menu\n"
         "/privacy - Privacy policy\n"
@@ -415,13 +495,14 @@ def main():
     app.add_handler(CommandHandler("privacy", privacy_command))
     app.add_handler(CommandHandler("cancel", cancel))
     
-    app.add_handler(CallbackQueryHandler(format_selection, pattern="^(youtube|spotify|help|privacy|back_to_menu)$"))
+    app.add_handler(CallbackQueryHandler(format_selection, pattern="^(deezer|youtube|spotify|help|privacy|back_to_menu)$"))
     app.add_handler(CallbackQueryHandler(check_join_callback, pattern="^check_join$"))
     
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, download_video))
     
     print("🤖 THE PLUG is running...")
     print(f"📢 Channel: @{CHANNEL_USERNAME}")
+    print("🎵 Sources: Deezer (ARL loaded), YouTube, Spotify")
     app.run_polling()
 
 if __name__ == "__main__":
