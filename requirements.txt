@@ -3,3 +3,4 @@ python-dotenv
 yt-dlp
 spotdl
 httpx
+deezspot
